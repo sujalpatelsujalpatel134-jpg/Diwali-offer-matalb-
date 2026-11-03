@@ -1,22 +1,35 @@
 import os
 import logging
 import asyncio
+import json
+import random
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
-from motor.motor_asyncio import AsyncIOMotorClient
 
 # Logging setup
 logging.basicConfig(level=logging.INFO)
 
-API_ID = int(os.environ.get("API_ID", "29547528"))
-API_HASH = os.environ.get("API_HASH", "your_api_hash_here")
+# Direct Credentials (No Env Variables needed!)
+API_ID = 36244302
+API_HASH = "5e844495cd20f53c82d84f97289e3b73"
 BOT_TOKEN = "9072774703:AAEXziVGAuhTQbsqv2KF1APQt39172pjp3Y"
 ADMIN_ID = 7712648594
-MONGO_URI = os.environ.get("MONGO_URI", "your_mongodb_connection_string")
 
-db_client = AsyncIOMotorClient(MONGO_URI)
-db = db_client["file_share_bot"]
-files_collection = db["files"]
+# Local JSON file for saving batches (Zero database errors)
+BATCH_FILE = "batches.json"
+
+def load_batches():
+    if os.path.exists(BATCH_FILE):
+        try:
+            with open(BATCH_FILE, "r") as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_batches(data):
+    with open(BATCH_FILE, "w") as f:
+        json.dump(data, f)
 
 app = Client(
     "FileShareBot",
@@ -31,14 +44,19 @@ async def start_handler(client: Client, message: Message):
         payload = message.command[1]
         if payload.startswith("batch_"):
             batch_id = payload.split("_")[1]
-            batch_data = await files_collection.find_one({"_id": f"batch_{batch_id}"})
+            batches = load_batches()
+            batch_data = batches.get(batch_id)
             if batch_data:
-                for file_id in batch_data["file_ids"]:
-                    await client.copy_message(
-                        chat_id=message.from_user.id,
-                        from_chat_id=ADMIN_ID,
-                        message_id=file_id
-                    )
+                for file_id in batch_data.get("file_ids", []):
+                    try:
+                        await client.copy_message(
+                            chat_id=message.from_user.id,
+                            from_chat_id=ADMIN_ID,
+                            message_id=file_id
+                        )
+                        await asyncio.sleep(0.3)  # Flood prevention
+                    except Exception as e:
+                        logging.error(f"Error copying message {file_id}: {e}")
                 return
         else:
             try:
@@ -85,15 +103,11 @@ async def batch_handler(client: Client, message: Message):
         return
 
     file_ids = list(range(start_id, end_id + 1))
-
-    import random
     batch_token = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789', k=6))
     
-    await files_collection.update_one(
-        {"_id": f"batch_{batch_token}"},
-        {"$set": {"file_ids": file_ids}},
-        upsert=True
-    )
+    batches = load_batches()
+    batches[batch_token] = {"file_ids": file_ids}
+    save_batches(batches)
 
     bot_info = await client.get_me()
     batch_link = f"https://t.me/{bot_info.username}?start=batch_{batch_token}"
@@ -104,7 +118,8 @@ async def batch_handler(client: Client, message: Message):
 
 @app.on_message(filters.command("stats") & filters.user(ADMIN_ID) & filters.private)
 async def stats_handler(client: Client, message: Message):
-    total_batches = await files_collection.count_documents({"_id": {"$regex": "^batch_"}})
+    batches = load_batches()
+    total_batches = len(batches)
     await message.reply_text(
         f"📊 **Bot Statistics**\n\n• Total Active Batches: {total_batches}\n• Status: Online & Running 🟢"
     )
