@@ -1,1 +1,130 @@
 
+import os
+import logging
+from pyrogram import Client, filters
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from motor.motor_asyncio import AsyncIOMotorClient
+
+# Logging setup
+logging.basicConfig(level=logging.INFO)
+
+# Configuration from Environment Variables (Set these on Render)
+API_ID = int(os.environ.get("API_ID", "29547528")) # Replace with your Telegram API ID from my.telegram.org
+API_HASH = os.environ.get("API_HASH", "your_api_hash_here") # Replace with your Telegram API HASH
+BOT_TOKEN = "9072774703:AAEXziVGAuhTQbsqv2KF1APQt39172pjp3Y"
+ADMIN_ID = 7712648594
+MONGO_URI = os.environ.get("MONGO_URI", "your_mongodb_connection_string") # Free MongoDB Atlas URI
+
+db_client = AsyncIOMotorClient(MONGO_URI)
+db = db_client["file_share_bot"]
+files_collection = db["files"]
+
+app = Client(
+    "FileShareBot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN
+)
+
+@app.on_message(filters.command("start") & filters.private)
+async def start_handler(client: Client, message: Message):
+    if len(message.command) > 1:
+        # Handle deep-linked file or batch
+        payload = message.command[1]
+        if payload.startswith("batch_"):
+            batch_id = payload.split("_")[1]
+            batch_data = await files_collection.find_one({"_id": f"batch_{batch_id}"})
+            if batch_data:
+                for file_id in batch_data["file_ids"]:
+                    await client.copy_message(
+                        chat_id=message.from_user.id,
+                        from_chat_id=ADMIN_ID,
+                        message_id=file_id
+                    )
+                return
+        else:
+            try:
+                file_msg_id = int(payload)
+                await client.copy_message(
+                    chat_id=message.from_user.id,
+                    from_chat_id=ADMIN_ID,
+                    message_id=file_msg_id
+                )
+                return
+            except Exception:
+                pass
+
+    await message.reply_text(
+        "👋 **Welcome to File Share Bot!**\n\nSend me any video or file (Admin only) to generate a shareable link."
+    )
+
+# File Upload Handler (Admin Only)
+@app.on_message((filters.video | filters.document | filters.audio) & filters.user(ADMIN_ID) & filters.private)
+async def store_file(client: Client, message: Message):
+    # Forward the file to the admin storage or keep it in place
+    bot_info = await client.get_me()
+    file_link = f"https://t.me/{bot_info.username}?start={message.id}"
+    
+    keyboard = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("🔗 Share Link", url=file_link)]]
+    )
+    await message.reply_text(
+        f"✅ **File Saved Successfully!**\n\nHere is your shareable link:\n`{file_link}`",
+        reply_markup=keyboard,
+        quote=True
+    )
+
+# Batch Mode Handler: /batch [msg_id_start] [msg_id_end]
+@app.on_message(filters.command("batch") & filters.user(ADMIN_ID) & filters.private)
+async def batch_handler(client: Client, message: Message):
+    cmd = message.command
+    if len(cmd) != 3:
+        await message.reply_text("❌ Usage: `/batch start_message_id end_message_id`")
+        return
+    
+    try:
+        start_id = int(cmd[1])
+        end_id = int(cmd[2])
+    except ValueError:
+        await message.reply_text("❌ Message IDs must be integers.")
+        return
+
+    file_ids = []
+    for msg_id in range(start_id, end_id + 1):
+        file_ids.append(msg_id)
+
+    import random
+    batch_token = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789', k=6))
+    
+    await files_collection.update_one(
+        {"_id": f"batch_{batch_token}"},
+        {"$set": {"file_ids": file_ids}},
+        upsert=True
+    )
+
+    bot_info = await client.get_me()
+    batch_link = f"https://t.me/{bot_info.username}?start=batch_{batch_token}"
+    
+    await message.reply_text(
+        f"📦 **Batch Created Successfully!**\n\nLink for {len(file_ids)} files:\n`{batch_link}`"
+    )
+
+# Stats Command: /stats
+@app.on_message(filters.command("stats") & filters.user(ADMIN_ID) & filters.private)
+async def stats_handler(client: Client, message: Message):
+    total_batches = await files_collection.count_documents({"_id": {"$regex": "^batch_"}})
+    await message.reply_text(
+        f"📊 **Bot Statistics**\n\n• Total Active Batches: {total_batches}\n• Status: Online & Running 🟢"
+    )
+
+# Delete Command: /del
+@app.on_message(filters.command("del") & filters.user(ADMIN_ID) & filters.private)
+async def delete_handler(client: Client, message: Message):
+    if not message.reply_to_message:
+        await message.reply_text("❌ Reply to the file message you want to clear/invalidate link for.")
+        return
+    
+    await message.reply_text("🗑️ Associated link reference cleared.")
+
+if __name__ == "__main__":
+    app.run()
