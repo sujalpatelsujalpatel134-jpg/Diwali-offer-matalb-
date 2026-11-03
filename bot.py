@@ -3,19 +3,26 @@ import logging
 import asyncio
 import json
 import random
+
+# Fix for Python 3.10+ / 3.14 event loop issue with Pyrogram
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
+
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
 # Logging setup
 logging.basicConfig(level=logging.INFO)
 
-# Direct Credentials (No Env Variables needed!)
+# Direct Credentials
 API_ID = 36244302
 API_HASH = "5e844495cd20f53c82d84f97289e3b73"
 BOT_TOKEN = "9072774703:AAEXziVGAuhTQbsqv2KF1APQt39172pjp3Y"
 ADMIN_ID = 7712648594
 
-# Local JSON file for saving batches (Zero database errors)
+# Local JSON file for saving batches
 BATCH_FILE = "batches.json"
 
 def load_batches():
@@ -54,7 +61,7 @@ async def start_handler(client: Client, message: Message):
                             from_chat_id=ADMIN_ID,
                             message_id=file_id
                         )
-                        await asyncio.sleep(0.3)  # Flood prevention
+                        await asyncio.sleep(0.3)
                     except Exception as e:
                         logging.error(f"Error copying message {file_id}: {e}")
                 return
